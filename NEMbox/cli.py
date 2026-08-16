@@ -466,7 +466,7 @@ def cmd_auth_login(api: NetEase, ctx: CliContext, args: argparse.Namespace) -> i
         return ctx.emit_err("api_error", "获取登录二维码失败")
     qr_ascii = _render_qr_ascii(api.login_qr_url(unikey))
     data = {"unikey": unikey, "qr_ascii": qr_ascii}
-    human = f"{qr_ascii}\n请使用网易云音乐 App 扫描二维码登录。"
+    human = f"{qr_ascii}\n请使用网易云音乐 App 扫描二维码登录。\n扫码后请运行: musicbox auth login --check {unikey}"
     return ctx.emit_ok(
         data,
         human,

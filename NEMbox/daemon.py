@@ -107,7 +107,7 @@ def _get_socket_addr() -> str | tuple[str, int]:
                 return ("127.0.0.1", int(f.read().strip()))
         except Exception:
             pass
-    return ("127.0.0.1", 27123)
+    return ("127.0.0.1", -1)
 
 
 def _get_socket_family() -> socket.AddressFamily:
@@ -123,9 +123,12 @@ def is_daemon_running() -> bool:
     ):
         return False
     try:
+        addr = _get_socket_addr()
+        if not hasattr(socket, "AF_UNIX") and (not isinstance(addr, tuple) or addr[1] <= 0):
+            return False
         with socket.socket(_get_socket_family(), socket.SOCK_STREAM) as client:
             client.settimeout(1.0)
-            client.connect(_get_socket_addr())
+            client.connect(addr)
         return True
     except OSError:
         return False
@@ -190,11 +193,7 @@ class MusicboxDaemon:
         else:
             self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            port = 27123
-            try:
-                self._server.bind(("127.0.0.1", port))
-            except OSError:
-                self._server.bind(("127.0.0.1", 0))
+            self._server.bind(("127.0.0.1", 0))
             actual_port = self._server.getsockname()[1]
             _ensure_runtime_dir()
             port_file = os.path.join(Constant.runtime_dir, "musicboxd.port")
