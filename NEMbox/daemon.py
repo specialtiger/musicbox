@@ -8,7 +8,10 @@ daemon and the curses TUI mutually exclusive.
 
 import contextlib
 import errno
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore
 import json
 import os
 import signal
@@ -61,11 +64,21 @@ def acquire_lock() -> int | None:
     """
     _ensure_runtime_dir()
     fd = os.open(Constant.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        os.close(fd)
-        return None
+    if fcntl is not None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return None
+    else:
+        try:
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            os.close(fd)
+            return None
+        except ImportError:
+            pass
     os.ftruncate(fd, 0)
     os.write(fd, str(os.getpid()).encode())
     return fd
@@ -75,18 +88,44 @@ def release_lock(fd: int | None) -> None:
     if fd is None:
         return
     with contextlib.suppress(Exception):
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        else:
+            with contextlib.suppress(ImportError, OSError):
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         os.close(fd)
+
+
+def _get_socket_addr() -> str | tuple[str, int]:
+    if hasattr(socket, "AF_UNIX"):
+        return Constant.socket_path
+    port_file = os.path.join(Constant.runtime_dir, "musicboxd.port")
+    if os.path.exists(port_file):
+        try:
+            with open(port_file) as f:
+                return ("127.0.0.1", int(f.read().strip()))
+        except Exception:
+            pass
+    return ("127.0.0.1", 27123)
+
+
+def _get_socket_family() -> socket.AddressFamily:
+    return getattr(socket, "AF_UNIX", socket.AF_INET)
 
 
 def is_daemon_running() -> bool:
     """True if a daemon is reachable on the socket."""
-    if not os.path.exists(Constant.socket_path):
+    if hasattr(socket, "AF_UNIX") and not os.path.exists(Constant.socket_path):
+        return False
+    if not hasattr(socket, "AF_UNIX") and not os.path.exists(
+        os.path.join(Constant.runtime_dir, "musicboxd.port")
+    ):
         return False
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        with socket.socket(_get_socket_family(), socket.SOCK_STREAM) as client:
             client.settimeout(1.0)
-            client.connect(Constant.socket_path)
+            client.connect(_get_socket_addr())
         return True
     except OSError:
         return False
@@ -106,9 +145,9 @@ def send_request(
         + b"\n"
     )
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        with socket.socket(_get_socket_family(), socket.SOCK_STREAM) as client:
             client.settimeout(timeout)
-            client.connect(Constant.socket_path)
+            client.connect(_get_socket_addr())
             client.sendall(payload)
             data = b""
             while b"\n" not in data:
@@ -116,7 +155,7 @@ def send_request(
                 if not chunk:
                     break
                 data += chunk
-    except (FileNotFoundError, ConnectionRefusedError) as exc:
+    except (FileNotFoundError, ConnectionRefusedError, OSError) as exc:
         raise ConnectionError("daemon not running") from exc
     if not data:
         raise ConnectionError("empty response from daemon")
@@ -141,11 +180,26 @@ class MusicboxDaemon:
         return self._lock_fd is not None
 
     def _bind(self) -> None:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(Constant.socket_path)
-        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._server.bind(Constant.socket_path)
-        os.chmod(Constant.socket_path, 0o600)
+        if hasattr(socket, "AF_UNIX"):
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(Constant.socket_path)
+            self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._server.bind(Constant.socket_path)
+            with contextlib.suppress(OSError):
+                os.chmod(Constant.socket_path, 0o600)
+        else:
+            self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            port = 27123
+            try:
+                self._server.bind(("127.0.0.1", port))
+            except OSError:
+                self._server.bind(("127.0.0.1", 0))
+            actual_port = self._server.getsockname()[1]
+            _ensure_runtime_dir()
+            port_file = os.path.join(Constant.runtime_dir, "musicboxd.port")
+            with open(port_file, "w") as f:
+                f.write(str(actual_port))
         self._server.listen(8)
 
     def _cleanup(self) -> None:
@@ -157,8 +211,13 @@ class MusicboxDaemon:
         if self._server is not None:
             with contextlib.suppress(Exception):
                 self._server.close()
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(Constant.socket_path)
+        if hasattr(socket, "AF_UNIX"):
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(Constant.socket_path)
+        else:
+            port_file = os.path.join(Constant.runtime_dir, "musicboxd.port")
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(port_file)
         release_lock(self._lock_fd)
         self._lock_fd = None
 
@@ -509,19 +568,36 @@ def _daemonize_and_serve() -> None:
 
 
 def spawn_daemon(timeout: float = _READY_TIMEOUT) -> bool:
-    """Double-fork a background daemon and wait until it is reachable."""
+    """Double-fork or spawn a background daemon and wait until it is reachable."""
     if is_daemon_running():
         return True
     _ensure_runtime_dir()
-    pid = os.fork()
-    if pid == 0:
-        try:
-            _daemonize_and_serve()
-        finally:
-            os._exit(1)
-    # Parent: reap the first child (which exits right after the second fork).
-    with contextlib.suppress(OSError):
-        os.waitpid(pid, 0)
+    if hasattr(os, "fork"):
+        pid = os.fork()
+        if pid == 0:
+            try:
+                _daemonize_and_serve()
+            finally:
+                os._exit(1)
+        # Parent: reap the first child (which exits right after the second fork).
+        with contextlib.suppress(OSError):
+            os.waitpid(pid, 0)
+    else:
+        import subprocess
+
+        flags = 0
+        if sys.platform == "win32":
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        subprocess.Popen(
+            [sys.executable, "-m", "NEMbox.daemon"],
+            creationflags=flags,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
     deadline = time.time() + timeout
     while time.time() < deadline:
         if is_daemon_running():

@@ -9,6 +9,7 @@
 网易云音乐 Menu
 """
 
+import contextlib
 import curses as C
 import locale
 import os
@@ -50,15 +51,34 @@ def carousel(left, right, x):
         return x
 
 
-KEY_MAP = cast(dict[str, Any], Config().get("keymap"))
-COMMAND_LIST = list(map(ord, KEY_MAP.values()))
+def _key_name(k: int) -> str:
+    try:
+        return C.keyname(k).decode("utf-8", "ignore")
+    except Exception:
+        return ""
 
-if Config().get("mouse_movement"):
-    KEY_MAP["mouseUp"] = 259
-    KEY_MAP["mouseDown"] = 258
-else:
-    KEY_MAP["mouseUp"] = -259
-    KEY_MAP["mouseDown"] = -258
+
+KEY_MAP = cast(dict[str, Any], Config().get("keymap"))
+COMMAND_LIST = list(map(ord, KEY_MAP.values())) + [
+    getattr(C, "KEY_UP", 259),
+    getattr(C, "KEY_DOWN", 258),
+    getattr(C, "KEY_LEFT", 260),
+    getattr(C, "KEY_RIGHT", 261),
+    getattr(C, "KEY_PPAGE", 339),
+    getattr(C, "KEY_NPAGE", 338),
+    getattr(C, "KEY_HOME", 262),
+    getattr(C, "KEY_END", 360),
+    getattr(C, "KEY_ENTER", 343),
+    10,
+    13,
+    258,
+    259,
+    260,
+    261,
+]
+
+KEY_MAP["mouseUp"] = 259
+KEY_MAP["mouseDown"] = 258
 
 shortcut = [
     [KEY_MAP["down"], "Down", "下移"],
@@ -177,9 +197,12 @@ class Menu:
         self.djstack: list[Any] = []
         self.at_playing_list = False
         self.enter_flag = True
-        signal.signal(signal.SIGWINCH, self.change_term)
-        signal.signal(signal.SIGINT, self.send_kill)
-        signal.signal(signal.SIGTERM, self.send_kill)
+        if threading.current_thread() is threading.main_thread():
+            with contextlib.suppress(ValueError):
+                if hasattr(signal, "SIGWINCH"):
+                    signal.signal(signal.SIGWINCH, self.change_term)
+                signal.signal(signal.SIGINT, self.send_kill)
+                signal.signal(signal.SIGTERM, self.send_kill)
         self.menu_starts = time.time()
         self.countdown_start = time.time()
         self.countdown = -1
@@ -265,7 +288,7 @@ class Menu:
 
     def _login_retry(self):
         x = self.ui.build_login_error()
-        if x >= 0 and C.keyname(x).decode("utf-8") != KEY_MAP["forward"]:
+        if x >= 0 and x not in (getattr(C, "KEY_RIGHT", 261), 261, 10, 13) and _key_name(x) != KEY_MAP["forward"]:
             return False
         return self.login()
 
@@ -329,17 +352,20 @@ class Menu:
         sys.exit()
 
     def update_alert(self, version):
-        latest = Menu().check_version()
-        if str(latest) > str(version) and latest != 0:
-            notify("MusicBox Update == available", 1)
-            time.sleep(0.5)
-            notify(
-                "NetEase-MusicBox installed version:"
-                + version
-                + "\nNetEase-MusicBox latest version:"
-                + latest,
-                0,
-            )
+        try:
+            latest = self.check_version()
+            if str(latest) > str(version) and latest != 0:
+                notify("MusicBox Update == available", 1)
+                time.sleep(0.5)
+                notify(
+                    "NetEase-MusicBox installed version:"
+                    + version
+                    + "\nNetEase-MusicBox latest version:"
+                    + str(latest),
+                    0,
+                )
+        except Exception:
+            pass
 
     def check_version(self):
         # 检查更新
@@ -350,11 +376,17 @@ class Menu:
             return 0
 
     def start_fork(self, version):
-        pid = os.fork()
-        if pid == 0:
-            Menu().update_alert(version)
+        if hasattr(os, "fork"):
+            pid = os.fork()
+            if pid == 0:
+                Menu().update_alert(version)
+            else:
+                Menu().start()
         else:
-            Menu().start()
+            threading.Thread(
+                target=self.update_alert, args=(version,), daemon=True
+            ).start()
+            self.start()
 
     def next_song(self):
         if self.player.is_empty:
@@ -539,9 +571,9 @@ class Menu:
         if num == 0:  # 0j -> 1j
             num = 1
         for _ in range(num):
-            if cmd in (KEY_MAP["mouseUp"], ord(KEY_MAP["up"])):
+            if cmd in (KEY_MAP["mouseUp"], ord(KEY_MAP["up"]), 259, getattr(C, "KEY_UP", 259)):
                 self.up_key_event()
-            elif cmd in (KEY_MAP["mouseDown"], ord(KEY_MAP["down"])):
+            elif cmd in (KEY_MAP["mouseDown"], ord(KEY_MAP["down"]), 258, getattr(C, "KEY_DOWN", 258)):
                 self.down_key_event()
             elif cmd == ord(KEY_MAP["nextSong"]):
                 self.next_key_event()
@@ -733,52 +765,61 @@ class Menu:
                 self.player.update_size()
 
             # 退出
-            elif C.keyname(key).decode("utf-8") == KEY_MAP["quit"]:
+            elif _key_name(key) == KEY_MAP["quit"]:
                 stop_lyrics_process()
                 break
 
             # 退出并清除用户信息
-            elif C.keyname(key).decode("utf-8") == KEY_MAP["quitClear"]:
+            elif _key_name(key) == KEY_MAP["quitClear"]:
                 stop_lyrics_process()
                 self.api.logout()
                 break
 
             # 上移
             elif (
-                C.keyname(key).decode("utf-8") == KEY_MAP["up"]
-                and pre_key not in range(ord("0"), ord("9"))
-                or self.config.get("mouse_movement")
-                and key == KEY_MAP["mouseUp"]
-            ):
+                key in (getattr(C, "KEY_UP", 259), 259, ord(KEY_MAP["up"]))
+                or _key_name(key) in (KEY_MAP["up"], "KEY_UP")
+            ) and pre_key not in range(ord("0"), ord("9")):
                 self.up_key_event()
 
             # 下移
             elif (
-                C.keyname(key).decode("utf-8") == KEY_MAP["down"]
-                and pre_key not in range(ord("0"), ord("9"))
-                or self.config.get("mouse_movement")
-                and key == KEY_MAP["mouseDown"]
-            ):
+                key in (getattr(C, "KEY_DOWN", 258), 258, ord(KEY_MAP["down"]))
+                or _key_name(key) in (KEY_MAP["down"], "KEY_DOWN")
+            ) and pre_key not in range(ord("0"), ord("9")):
                 self.down_key_event()
 
             # 向上翻页
-            elif C.keyname(key).decode("utf-8") == KEY_MAP["prevPage"]:
+            elif (
+                key in (getattr(C, "KEY_PPAGE", 339), 339, ord(KEY_MAP["prevPage"]))
+                or _key_name(key) in (KEY_MAP["prevPage"], "KEY_PPAGE")
+            ):
                 self.up_page_event()
 
             # 向下翻页
-            elif C.keyname(key).decode("utf-8") == KEY_MAP["nextPage"]:
+            elif (
+                key in (getattr(C, "KEY_NPAGE", 338), 338, ord(KEY_MAP["nextPage"]))
+                or _key_name(key) in (KEY_MAP["nextPage"], "KEY_NPAGE")
+            ):
                 self.down_page_event()
 
             # 前进
-            elif C.keyname(key).decode("utf-8") == KEY_MAP["forward"] or key == 10:
+            elif (
+                key in (getattr(C, "KEY_RIGHT", 261), 261, 10, 13, ord(KEY_MAP["forward"]))
+                or getattr(C, "KEY_ENTER", -1) == key
+                or _key_name(key) in (KEY_MAP["forward"], "KEY_RIGHT", "KEY_ENTER", "^J", "^M")
+            ):
                 self.enter_page_event()
 
             # 回退
-            elif C.keyname(key).decode("utf-8") == KEY_MAP["back"]:
+            elif (
+                key in (getattr(C, "KEY_LEFT", 260), 260, ord(KEY_MAP["back"]))
+                or _key_name(key) in (KEY_MAP["back"], "KEY_LEFT")
+            ):
                 self.back_page_event()
 
             # 模糊搜索
-            elif C.keyname(key).decode("utf-8") == KEY_MAP["search"]:
+            elif _key_name(key) == KEY_MAP["search"]:
                 if self.at_search_result:
                     self.back_page_event()
                 self.stack.append(

@@ -66,7 +66,10 @@ class Cache(Singleton):
     def _kill_all(self):
         def _kill(p):
             if p:
-                os.kill(p.pid, signal.SIGKILL)
+                try:
+                    p.kill()
+                except Exception:
+                    pass
 
         _kill(self.aria2c)
         _kill(self.wget)

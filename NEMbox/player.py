@@ -13,8 +13,10 @@ from __future__ import annotations
 import json
 import os
 import random
+import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -354,12 +356,23 @@ class Player:
         )
 
     def _play_backend(self, song, url):
-        backend = str(self.config.get("player_backend") or "mpg123").lower()
+        backend = str(self.config.get("player_backend") or "").lower()
         if backend == "mpv" or self._is_flac_song(song, url):
             return "mpv"
-        return "mpg123"
+        if backend == "mpg123":
+            if shutil.which("mpg123"):
+                return "mpg123"
+            if shutil.which("mpv"):
+                return "mpv"
+        if shutil.which("mpv"):
+            return "mpv"
+        if shutil.which("mpg123"):
+            return "mpg123"
+        return "mpv"
 
     def _new_mpv_ipc_path(self):
+        if sys.platform == "win32":
+            return rf"\\.\pipe\musicbox-mpv-{os.getpid()}-{id(self)}"
         return os.path.join(
             tempfile.gettempdir(), f"musicbox-mpv-{os.getpid()}-{id(self)}.sock"
         )
@@ -368,12 +381,11 @@ class Player:
         path = path if path is not None else getattr(self, "mpv_ipc_path", "")
         if not path:
             return
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            log.warn(e)
+        if not path.startswith(r"\\.\pipe"):
+            try:
+                os.unlink(path)
+            except (FileNotFoundError, OSError):
+                pass
         if path == getattr(self, "mpv_ipc_path", ""):
             self.mpv_ipc_path = ""
 
@@ -386,39 +398,63 @@ class Player:
         path = getattr(self, "mpv_ipc_path", "")
         if not path:
             return False
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.connect(path)
-                payload = json.dumps({"command": command}).encode() + b"\n"
-                client.sendall(payload)
-            return True
-        except OSError as e:
-            log.warn(e)
-            return False
+        payload = json.dumps({"command": command}).encode() + b"\n"
+        if path.startswith(r"\\.\pipe"):
+            try:
+                with open(path, "r+b", buffering=0) as pipe:
+                    pipe.write(payload)
+                return True
+            except OSError as e:
+                log.warn(e)
+                return False
+        if hasattr(socket, "AF_UNIX"):
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.connect(path)
+                    client.sendall(payload)
+                return True
+            except OSError as e:
+                log.warn(e)
+                return False
+        return False
 
     def _request_mpv_property(self, name, path=None):
         path = path or getattr(self, "mpv_ipc_path", "")
         if not path:
             return None
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(0.2)
-                client.connect(path)
-                payload = json.dumps({"command": ["get_property", name]}).encode()
-                client.sendall(payload + b"\n")
-                data = b""
-                while b"\n" not in data:
-                    chunk = client.recv(4096)
-                    if not chunk:
-                        break
-                    data += chunk
-            if not data:
-                return None
-            response = json.loads(data.split(b"\n", 1)[0].decode())
-            if response.get("error") == "success":
-                return response.get("data")
-        except (OSError, ValueError):
-            pass
+        payload = json.dumps({"command": ["get_property", name]}).encode() + b"\n"
+        if path.startswith(r"\\.\pipe"):
+            try:
+                with open(path, "r+b", buffering=0) as pipe:
+                    pipe.write(payload)
+                    data = pipe.readline()
+                    if not data:
+                        return None
+                    response = json.loads(data.split(b"\n", 1)[0].decode())
+                    if response.get("error") == "success":
+                        return response.get("data")
+            except (OSError, ValueError):
+                pass
+            return None
+        if hasattr(socket, "AF_UNIX"):
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.settimeout(0.2)
+                    client.connect(path)
+                    client.sendall(payload)
+                    data = b""
+                    while b"\n" not in data:
+                        chunk = client.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                if not data:
+                    return None
+                response = json.loads(data.split(b"\n", 1)[0].decode())
+                if response.get("error") == "success":
+                    return response.get("data")
+            except (OSError, ValueError):
+                pass
         return None
 
     @staticmethod
@@ -500,10 +536,17 @@ class Player:
                 now = time.time()
                 is_current = self._is_current_playback(token, process)
                 if self.playing_flag and is_current:
-                    self.process_location = min(
-                        self.process_location + now - last_tick,
-                        self.process_length,
-                    )
+                    pos = self._request_mpv_property("time-pos", ipc_path)
+                    if pos is not None and isinstance(pos, (int, float)):
+                        self.process_location = float(pos)
+                    else:
+                        self.process_location = min(
+                            self.process_location + now - last_tick,
+                            self.process_length,
+                        )
+                    dur = self._request_mpv_property("duration", ipc_path)
+                    if dur is not None and isinstance(dur, (int, float)) and dur > 0:
+                        self.process_length = int(dur)
                     if not audio_info_loaded:
                         audio_info_loaded = self._refresh_mpv_audio_info(
                             ipc_path, token, process

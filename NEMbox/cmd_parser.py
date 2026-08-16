@@ -104,6 +104,8 @@ def parse_keylist(keylist):
             ord(KEY_MAP["nextSong"]),
             ord(KEY_MAP["down"]),
             ord(KEY_MAP["up"]),
+            258,
+            259,
         )
         and max(keylist) <= 57
         and min(keylist) >= 48

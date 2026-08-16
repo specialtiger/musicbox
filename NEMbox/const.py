@@ -1,5 +1,6 @@
 # KenHuang: 使配置文件夹符合XDG标准
 import os
+import tempfile
 
 
 class Constant:
@@ -31,7 +32,7 @@ class Constant:
 
     # Runtime dir for the daemon's Unix domain socket + single-owner lock.
     # Follows the XDG_RUNTIME_DIR convention, falling back to the system tmp dir.
-    _runtime_base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"  # noqa: S108
+    _runtime_base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
     runtime_dir = os.path.join(_runtime_base, "netease-musicbox")
     _uid = os.getuid() if hasattr(os, "getuid") else 0
     socket_path = os.path.join(runtime_dir, f"musicboxd-{_uid}.sock")
