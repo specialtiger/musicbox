@@ -35,6 +35,19 @@
 
 ### 安装系统依赖
 
+Windows:
+
+推荐安装 `mpv` 作为音频播放后端（支持 MP3/FLAC 高清音质）：
+
+```powershell
+# 使用 winget 安装 mpv
+winget install mpv.net
+# 或使用 Scoop / Chocolatey
+# scoop install mpv
+# choco install mpv
+```
+*注：安装后请确保 `mpv.exe` 所在目录已添加到系统环境变量 PATH 中。*
+
 macOS:
 
 ```bash
@@ -55,7 +68,19 @@ sudo yum install -y python3-devel mpg123 mpv
 
 ### 安装 MusicBox
 
-**PyPI**（可能落后于源码）：
+**Windows (PowerShell / CMD)**：
+
+```powershell
+# 1. 安装 Windows 终端 curses 支持与 MusicBox
+pip install windows-curses NetEase-MusicBox
+
+# 2. 或通过源码可编辑安装
+git clone https://github.com/specialtiger/musicbox.git
+cd musicbox
+pip install -e .
+```
+
+**PyPI**（Linux / macOS）：
 
 ```bash
 uv tool install netease-musicbox
@@ -65,7 +90,7 @@ uv tool install netease-musicbox
 **源码**（全局命令；改代码后需重装，开发期可用 `-e`）：
 
 ```bash
-git clone https://github.com/darknessomi/musicbox.git
+git clone https://github.com/specialtiger/musicbox.git
 cd musicbox
 uv tool install .      # 或 pipx install .
 uv tool install -e .   # 可编辑安装，源码改动即时生效
@@ -74,7 +99,7 @@ uv tool install -e .   # 可编辑安装，源码改动即时生效
 **本地开发**（不装全局命令）：
 
 ```bash
-git clone https://github.com/darknessomi/musicbox.git
+git clone https://github.com/specialtiger/musicbox.git
 cd musicbox
 uv sync
 uv run musicbox
@@ -103,6 +128,7 @@ musicbox
 
 ### 已验证系统
 
+- Windows 10 / Windows 11 x64 (PowerShell, Windows Terminal)
 - Ubuntu 24.04 LTS x64
 - macOS 26.5
 - Raspberry Pi 4 / Ubuntu 22.04 arm64（Docker 镜像：`balenalib/raspberrypi4-64-ubuntu:jammy`）
