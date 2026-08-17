@@ -18,6 +18,7 @@
 ## 功能特性
 
 - 支持多档音质播放：MP3（极高/较高/标准）及无损、高清臻音、超清母带等 FLAC，安装 `mpv` 后自动切换
+- 支持 Web 网页播放控制台（`musicbox web`），在浏览器或手机上实时查看播放进度、歌词与播放队列
 - 支持歌曲、艺术家、专辑、本地列表模糊搜索
 - 支持排行榜、新碟上架、精选歌单、主播电台、我的歌单、我的云盘、私人 FM 和每日推荐
 - 支持本地收藏、歌曲评论、专辑跳转、随心打碟和定时退出
@@ -164,6 +165,8 @@ musicbox play --songs 33894312 28258988
 musicbox pause --json
 musicbox status --json
 musicbox queue list --json
+musicbox web                  # 启动网页控制台并在浏览器打开
+musicbox web --port 8080      # 自定义 Web 端口
 musicbox auth login --no-wait --json
 musicbox download --playlist 3778678 --path ./music --json
 ```

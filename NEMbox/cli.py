@@ -199,7 +199,10 @@ def _update_notice() -> dict[str, Any] | None:
 
 
 def _ctx_from_ns(ns: argparse.Namespace) -> CliContext:
-    return CliContext(json_mode=ns.json, quiet=ns.quiet)
+    return CliContext(
+        json_mode=bool(getattr(ns, "json", False)),
+        quiet=bool(getattr(ns, "quiet", False)),
+    )
 
 
 def _require_logged_in(api: NetEase, ctx: CliContext) -> bool:
@@ -1475,6 +1478,47 @@ def _build_control_parsers(sub: Any) -> None:
     )
     p_daemon.set_defaults(handler="daemon")
 
+    # web
+    p_web = sub.add_parser(
+        "web",
+        help="启动 Web 控制台与播放进度网页",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  musicbox web\n"
+            "  musicbox web --port 8080\n"
+            "  musicbox web --host 0.0.0.0 --no-open"
+        ),
+    )
+    _add_common_flags(p_web)
+    p_web.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="监听地址（默认: 127.0.0.1，设为 0.0.0.0 允许局域网设备访问）",
+    )
+    p_web.add_argument(
+        "--port",
+        type=int,
+        default=27124,
+        help="监听端口（默认: 27124）",
+    )
+    p_web.add_argument(
+        "--no-open",
+        action="store_true",
+        help="不自动在默认浏览器中打开页面",
+    )
+    p_web.set_defaults(handler="web")
+
+
+def cmd_web(ctx: CliContext, ns: argparse.Namespace) -> int:
+    from .web import run_web_server
+
+    return run_web_server(
+        host=ns.host,
+        port=ns.port,
+        open_browser=not ns.no_open,
+    )
+
 
 def cmd_artist(api: NetEase, ctx: CliContext, ns: argparse.Namespace) -> int:
     raw = api.artists(ns.id)
@@ -1547,6 +1591,7 @@ def dispatch(api: NetEase, ns: argparse.Namespace) -> int:
         "queue_play": lambda: cmd_queue_play(ctx, ns),
         "queue_clear": lambda: cmd_queue_clear(ctx, ns),
         "daemon": lambda: cmd_daemon(ctx, ns),
+        "web": lambda: cmd_web(ctx, ns),
     }
     fn = handlers.get(handler)
     if not fn:
